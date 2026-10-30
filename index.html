@@ -168,7 +168,11 @@ const CONFIG = {
   sfx: true,           // 효과음 기본값
   bgm: false,          // 배경음 기본값
   hintsPerStage: 3,    // 스테이지당 힌트 횟수
-  unlockAll: true      // 모든 스테이지를 처음부터 열어 두기
+  unlockAll: true,     // 모든 스테이지를 처음부터 열어 두기
+  hearts: true,        // 달리다 하트를 먹으면 목숨 +1 (끄려면 false)
+  heartChance: 0.22,   // 게이트가 나올 때 하트가 함께 나올 확률 (목숨이 줄어 있을 때만)
+  heartChanceLow: 0.45, // 목숨이 2개 이하일 때의 확률
+  heartGap: 4          // 하트와 하트 사이에 최소 몇 개의 게이트를 지나야 하는지
 };
 
 /* ====================================================================
@@ -392,6 +396,7 @@ function tone(f, d = .12, type = 'sine', v = .08, slide = 0, delay = 0, isBgm = 
 }
 const sfx = {
   jump() { tone(380, .12, 'square', .035, 260); },
+  heart() { [784, 988, 1319].forEach((f, i) => tone(f, .16, 'sine', .1, 0, i * .07)); },
   good() { tone(660, .1, 'triangle', .1); tone(990, .14, 'triangle', .1, 0, .08); },
   bad()  { tone(190, .28, 'sawtooth', .08, -100); },
   hit()  { tone(130, .3, 'square', .09, -70); },
@@ -540,7 +545,7 @@ function newGame(stageId) {
     stage: st, theme: st.theme, diff: S.diff,
     sents: BY_STAGE[stageId].map(o => Object.assign({}, o, { chunks: chunkFor(o, S.diff) })),
     sentIdx: 0, chunkIdx: 0, lives: D.lives, maxLives: D.lives,
-    score: 0, combo: 0, maxCombo: 0, correct: 0, wrong: 0,
+    score: 0, combo: 0, maxCombo: 0, correct: 0, wrong: 0, livesLost: 0, gatesSinceHeart: 99,
     hints: CONFIG.hintsPerStage, hintShown: -1, hintUsedSent: false,
     missed: new Set(), doneIds: [],
     h: 0, vy: 0, jumps: 0, invuln: 0, shake: 0,
@@ -636,6 +641,7 @@ function spawnGate(extra = 0) {
   const w = Math.max(G.diff === 'hard' ? 92 : 120, Math.ceil(Math.max(...blocks.map(b => ctx.measureText(b.text).width)) + 34));
   const D = DIFF[G.diff];
   const hasSpike = Math.random() < D.spike;
+  let spikeX = null;
   const lead = hasSpike ? Math.max(D.lead, 2.6) : D.lead;   // 가시가 있으면 점프할 여유를 넉넉히
   const gx = PX + G.speed * (lead + extra);
   G.objs.push({ type: 'gate', x: gx, w, fs, blocks, done: false, hint: false, pickT: 0, pick: null });
@@ -645,6 +651,17 @@ function spawnGate(extra = 0) {
     let ox = Math.max(PX + 330, (PX + gx) / 2 - 40 + rand(-30, 30));
     if (gx - ox < 300) ox = gx - 300;
     G.objs.push({ type: 'spike', x: ox, w: 34 * k, k });
+    spikeX = ox + 17 * k;
+  }
+  // 하트 (목숨이 줄어 있을 때만 가끔 등장)
+  G.gatesSinceHeart++;
+  if (CONFIG.hearts && G.lives < G.maxLives && G.gatesSinceHeart > CONFIG.heartGap
+      && !G.objs.some(o => o.type === 'heart')
+      && Math.random() < (G.lives <= 2 ? CONFIG.heartChanceLow : CONFIG.heartChance)) {
+    // 가시가 있으면 가시 위(점프하면 먹어요), 없으면 게이트 앞 빈 공간
+    const hx = spikeX !== null ? spikeX : Math.max(PX + 320, (PX + gx) / 2 + rand(-30, 30));
+    G.objs.push({ type: 'heart', x: hx - 15, w: 30, y: rand(70, 100), got: false });
+    G.gatesSinceHeart = 0;
   }
 }
 
@@ -662,7 +679,7 @@ function onCorrect(gate, block) {
   if (G.chunkIdx >= s.chunks.length) sentenceDone(); else spawnGate(0);
 }
 function onWrong(gate, block) {
-  G.wrong++; G.combo = 0; G.lives--; G.missed.add(G.sentIdx);
+  G.wrong++; G.combo = 0; G.lives--; G.livesLost++; G.missed.add(G.sentIdx);
   G.shake = .35;
   addFloat(PX + 20, view.ground - G.h - 80, '✗ 순서가 달라요', '#ff8c97');
   burst(PX + 20, view.ground - G.h - 30, '#ff5d6c', 12);
@@ -677,7 +694,7 @@ function onMiss() {
   spawnGate(0);
 }
 function onHit() {
-  G.lives--; G.combo = 0; G.invuln = 1.5; G.shake = .35;
+  G.lives--; G.livesLost++; G.combo = 0; G.invuln = 1.5; G.shake = .35;
   addFloat(PX + 20, view.ground - G.h - 80, '아야! 장애물', '#ff8c97');
   burst(PX, view.ground - 20, '#ff5d6c', 10);
   sfx.hit(); updateHud();
@@ -706,7 +723,7 @@ function nextSentence() {
 /* ---------- 결과 화면 ---------- */
 function starsFor() {
   const tot = G.correct + G.wrong, acc = tot ? G.correct / tot : 1;
-  return { acc, stars: (acc >= .9 && G.lives === G.maxLives) ? 3 : (acc >= .7 ? 2 : 1) };
+  return { acc, stars: (acc >= .9 && G.livesLost === 0) ? 3 : (acc >= .7 ? 2 : 1) };
 }
 const starStr = n => `<span class="star">${'★'.repeat(n)}<span class="off">${'★'.repeat(3 - n)}</span></span>`;
 function reviewList(set) {
@@ -886,13 +903,20 @@ function update(dt) {
           if (g.phase === 'run') onMiss();
         }
       }
+    } else if (o.type === 'heart') {
+      if (!o.got && g.lives < g.maxLives && o.x < pr && o.x + o.w > pl && pt > o.y && pb < o.y + 30) {
+        o.got = true; g.lives++;
+        addFloat(PX + 20, view.ground - g.h - 80, '♥ 목숨 +1', '#ff8fb1');
+        burst(o.x + 15, view.ground - o.y - 15, '#ff6b9a', 16);
+        sfx.heart(); updateHud();
+      }
     } else if (o.type === 'spike') {
       if (g.invuln <= 0 && o.x + 4 < pr - 2 && o.x + o.w - 4 > pl + 2 && pb < 28) {
         o.x -= 0; onHit(); if (state !== 'play') return;
       }
     }
   }
-  g.objs = g.objs.filter(o => o.x + (o.w || 0) > -400 && !(o.type === 'gate' && o.done && o.pickT > 1));
+  g.objs = g.objs.filter(o => o.x + (o.w || 0) > -400 && !(o.type === 'gate' && o.done && o.pickT > 1) && !(o.type === 'heart' && o.got));
 
   // 파티클 / 플로터
   g.parts.forEach(p => { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 700 * dt; });
@@ -935,6 +959,7 @@ function draw(dist, g, t) {
     // 장애물 + 게이트
     for (const o of g.objs) {
       if (o.type === 'spike') drawSpike(o);
+      else if (o.type === 'heart') drawHeart(o, t);
       else drawGate(o, g, t);
     }
     drawPlayer(g, t);
@@ -948,6 +973,16 @@ function draw(dist, g, t) {
   } else {
     drawPlayer({ h: 0, jumps: 0, invuln: 0 }, t);
   }
+}
+function drawHeart(o, t) {
+  const cx = o.x + 15, cy = view.ground - o.y - 15 + Math.sin(t * 4 + o.x * .01) * 4, sc = 1 + Math.sin(t * 7) * .07;
+  ctx.save(); ctx.translate(cx, cy); ctx.scale(sc, sc);
+  ctx.fillStyle = 'rgba(255,120,160,.22)'; ctx.beginPath(); ctx.arc(0, 0, 25, 0, 7); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(0, 12); ctx.bezierCurveTo(-22, -2, -14, -20, 0, -9); ctx.bezierCurveTo(14, -20, 22, -2, 0, 12); ctx.closePath();
+  ctx.fillStyle = '#ff4f84'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#fff'; ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.55)'; ctx.beginPath(); ctx.ellipse(-6, -7, 3.5, 2.2, -.5, 0, 7); ctx.fill();
+  ctx.restore();
 }
 function drawSpike(o) {
   const gy = view.ground;
@@ -1048,7 +1083,7 @@ function renderMenu() {
     ① 위에 나온 <b>우리말 뜻</b>에 맞게 영어 문장을 <b>앞에서부터 순서대로</b> 완성해요.<br>
     ② 캐릭터는 자동으로 달려요. <kbd>Space</kbd> 또는 <kbd>↑</kbd> 로 <b>점프</b>! 공중에서 <b>한 번 더</b> 누르면 더 높이 올라가요.<br>
     ③ 앞에 나타나는 <b>블록 중 다음에 올 덩어리</b>를 점프로 잡아요. <b>낮은 블록=달리기, 중간=점프, 높은 블록=두 번 점프</b><br>
-    ④ 틀린 블록이나 가시에 부딪히면 ♥가 줄어요. ♥가 0이 되면 게임 오버! 💡힌트(<kbd>H</kbd>)는 스테이지당 ${CONFIG.hintsPerStage}번.`;
+    ④ 틀린 블록이나 가시에 부딪히면 ♥가 줄어요. ♥가 0이 되면 게임 오버! 달리다 <b>떠 있는 하트</b>를 점프로 먹으면 ♥가 <b>1개 늘어나요</b>. 💡힌트(<kbd>H</kbd>)는 스테이지당 ${CONFIG.hintsPerStage}번.`;
   renderToggles();
 }
 $('#bLib').onclick = () => {
@@ -1079,7 +1114,7 @@ function frame(ts) {
 }
 
 /* 테스트/디버그용 훅 */
-window.__SR = { get G() { return G; }, get state() { return state; }, jump, startStage, PX, SLOT_H, chunkFor, confusables, wordTokens, makeChoices };
+window.__SR = { spawnGate, get G() { return G; }, get state() { return state; }, jump, startStage, PX, SLOT_H, chunkFor, confusables, wordTokens, makeChoices };
 
 resize(); renderMenu(); updateHud();
 requestAnimationFrame(frame);
