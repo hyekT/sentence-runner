@@ -186,7 +186,7 @@ const CONFIG = {
   heartChanceLow: 0.45, // 목숨이 2개 이하일 때의 확률
   heartGap: 4,         // 하트와 하트 사이에 최소 몇 개의 게이트를 지나야 하는지
   powerups: true,      // 🐢 슬로우 / 🧲 자석 아이템 (끄려면 false)
-  powerChance: 0.2,    // 게이트가 나올 때 아이템이 함께 나올 확률
+  powerChance: 0.35,   // 게이트가 나올 때 아이템이 함께 나올 확률
   powerGap: 3,         // 아이템과 아이템 사이에 최소 몇 개의 게이트를 지나야 하는지
   slowSec: 5,          // 슬로우 지속 시간(초)
   slowFactor: 0.6,     // 슬로우 중 속도 배율 (0.6 = 40% 느려짐)
@@ -673,10 +673,22 @@ function spawnGate(extra = 0) {
   ctx.font = `800 ${fs}px "Segoe UI", system-ui, sans-serif`;
   const w = Math.max(G.diff === 'hard' ? 92 : 120, Math.ceil(Math.max(...blocks.map(b => ctx.measureText(b.text).width)) + 34));
   const D = DIFF[G.diff];
-  const hasSpike = Math.random() < D.spike;
-  let spikeX = null;
-  const lead = hasSpike ? Math.max(D.lead, 2.6) : D.lead;   // 가시가 있으면 점프할 여유를 넉넉히
-  const gx = PX + G.speed * (lead + extra);
+  // 아이템(하트/슬로우/자석)을 먼저 정한다. 아이템이 있는 구간에는 가시를 만들지 않는다.
+  G.gatesSinceHeart++; G.gatesSincePower++;
+  const noPickupOnScreen = !G.objs.some(o => o.type === 'heart' || o.type === 'power');
+  let pickup = null;   // 'heart' | 'slow' | 'magnet'
+  if (CONFIG.hearts && G.lives < G.maxLives && G.gatesSinceHeart > CONFIG.heartGap && noPickupOnScreen
+      && Math.random() < (G.lives <= 2 ? CONFIG.heartChanceLow : CONFIG.heartChance)) {
+    pickup = 'heart'; G.gatesSinceHeart = 0;
+  } else if (CONFIG.powerups && G.gatesSincePower > CONFIG.powerGap && G.slow <= 0 && G.magnet <= 0 && noPickupOnScreen
+      && Math.random() < CONFIG.powerChance) {
+    pickup = Math.random() < .5 ? 'slow' : 'magnet'; G.gatesSincePower = 0;
+  }
+  const hasSpike = !pickup && Math.random() < D.spike;
+  // 가시가 있으면 점프할 여유를, 아이템이 있으면 먹고 착지할 여유를 넉넉히
+  const lead = hasSpike ? Math.max(D.lead, 2.6) : (pickup ? Math.max(D.lead, 2.6) + 0.1 : D.lead);
+  const baseSpeed = D.speed * (1 + 0.02 * G.sentIdx);   // 슬로우 중이어도 간격은 평소와 같게 (가시가 코앞에 생기지 않도록)
+  const gx = PX + baseSpeed * (lead + extra);
   G.objs.push({ type: 'gate', x: gx, w, fs, blocks, done: false, hint: false, pickT: 0, pick: null });
   // 장애물
   if (hasSpike) {
@@ -684,25 +696,12 @@ function spawnGate(extra = 0) {
     let ox = Math.max(PX + 330, (PX + gx) / 2 - 40 + rand(-30, 30));
     if (gx - ox < 300) ox = gx - 300;
     G.objs.push({ type: 'spike', x: ox, w: 34 * k, k });
-    spikeX = ox + 17 * k;
   }
-  // 하트 (목숨이 줄어 있을 때만 가끔 등장)
-  G.gatesSinceHeart++; let gotHeart = false;
-  if (CONFIG.hearts && G.lives < G.maxLives && G.gatesSinceHeart > CONFIG.heartGap
-      && !G.objs.some(o => o.type === 'heart')
-      && Math.random() < (G.lives <= 2 ? CONFIG.heartChanceLow : CONFIG.heartChance)) {
-    // 가시가 있으면 가시 위(점프하면 먹어요), 없으면 게이트 앞 빈 공간
-    const hx = spikeX !== null ? spikeX : Math.max(PX + 320, (PX + gx) / 2 + rand(-30, 30));
-    G.objs.push({ type: 'heart', x: hx - 15, w: 30, y: rand(70, 100), got: false });
-    G.gatesSinceHeart = 0; gotHeart = true;
-  }
-  // 아이템: 🐢 슬로우 / 🧲 자석
-  G.gatesSincePower++;
-  if (CONFIG.powerups && !gotHeart && G.gatesSincePower > CONFIG.powerGap && G.slow <= 0 && G.magnet <= 0
-      && !G.objs.some(o => o.type === 'heart' || o.type === 'power') && Math.random() < CONFIG.powerChance) {
-    const px = spikeX !== null ? spikeX : Math.max(PX + 320, (PX + gx) / 2 + rand(-30, 30));
-    G.objs.push({ type: 'power', kind: Math.random() < .5 ? 'slow' : 'magnet', x: px - 15, w: 30, y: rand(70, 100), got: false });
-    G.gatesSincePower = 0;
+  // 아이템: 게이트 앞 빈 공간 (가시 없음)
+  if (pickup) {
+    const ix = Math.min(gx - 300, Math.max(PX + 300, (PX + gx) / 2 + rand(-20, 20)));
+    if (pickup === 'heart') G.objs.push({ type: 'heart', x: ix - 15, w: 30, y: rand(70, 100), got: false });   // 한 번 점프로 먹기
+    else G.objs.push({ type: 'power', kind: pickup, x: ix - 15, w: 30, y: rand(190, 215), got: false });      // 두 번 점프해야 닿는 높이
   }
 }
 
@@ -1173,7 +1172,7 @@ function renderMenu() {
     ② 캐릭터는 자동으로 달려요. <kbd>Space</kbd> 또는 <kbd>↑</kbd> 로 <b>점프</b>! 공중에서 <b>한 번 더</b> 누르면 더 높이 올라가요.<br>
     ③ 앞에 나타나는 <b>블록 중 다음에 올 덩어리</b>를 점프로 잡아요. <b>낮은 블록=달리기, 중간=점프, 높은 블록=두 번 점프</b><br>
     ④ 틀린 블록이나 가시에 부딪히면 ♥가 줄어요. ♥가 0이 되면 게임 오버! 달리다 <b>떠 있는 하트</b>를 점프로 먹으면 ♥가 <b>1개 늘어나요</b>. 💡힌트(<kbd>H</kbd>)는 스테이지당 ${CONFIG.hintsPerStage}번.<br>
-    ⑤ 떠 있는 아이템도 점프로 먹어 보세요! <b>🐢 슬로우</b>는 잠깐 느려지고, <b>🧲 자석</b>은 정답 블록이 파랗게 빛나요. 틀린 문장은 <b>📝 오답 노트</b>에 모여서 따로 복습할 수 있어요.`;
+    ⑤ 아이템도 먹어 보세요! 높이 떠 있는 <b>🐢 슬로우</b>(잠깐 느려져요)와 <b>🧲 자석</b>(정답 블록이 파랗게 빛나요)은 <b>두 번 점프</b>해야 닿아요. 틀린 문장은 <b>📝 오답 노트</b>에 모여서 따로 복습할 수 있어요.`;
   { const n = noteEntries().length; $('#bNote').textContent = '📝 오답 노트' + (n ? ' (' + n + ')' : ''); }
   renderToggles();
 }
